@@ -27,6 +27,8 @@ net2 = "0.2.33"
 [dev-dependencies]
 regex = "1.1.2"
 criterion = "0.2.10"
+uuid = { version = "0.7.3", features = ["v4"] }
+env_logger = "0.6.1"
 
 [[bench]]
 name = "benchmarks"

@@ -1,16 +1,25 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+use crossbeam::unbounded;
+use env_logger;
 use lazy_static::lazy_static;
 use rosrust;
 use std::process::Command;
 use std::time;
+use uuid::Uuid;
 
 mod util;
 
 mod msg {
-    rosrust::rosmsg_include!(roscpp_tutorials / TwoInts, rospy_tutorials / AddTwoInts);
+    rosrust::rosmsg_include!(
+        roscpp_tutorials / TwoInts,
+        rospy_tutorials / AddTwoInts,
+        std_msgs / String
+    );
 }
 
 fn global_init() -> util::ChildProcessTerminator {
+    env_logger::init();
+
     let roscore = util::run_roscore_for(util::Language::None, util::Feature::Benchmarks);
     rosrust::init("benchmarker");
     roscore
@@ -22,6 +31,60 @@ lazy_static! {
 
 fn setup() {
     assert!(ROS_CORE.is_some());
+}
+
+fn publish_subscribe(criterion: &mut Criterion) {
+    setup();
+
+    // let namespace = format!("/namespaceat{}", line!());
+
+    let topic_name_inline = format!("topic_at_line_{}", line!());
+
+    let (tx, rx) = unbounded();
+
+    println!("Creating subscriber");
+
+    let _subscriber_raii =
+        rosrust::subscribe(&topic_name_inline, 200, move |v: msg::std_msgs::String| {
+            println!("RECEIVING {}", v.data);
+            tx.send(v.data).unwrap();
+        })
+        .unwrap();
+
+    println!("Creating publisher");
+
+    let publisher = rosrust::publish(&topic_name_inline, 200).unwrap();
+
+    println!("Sending to subscriber until response is received");
+
+    while rx.is_empty() {
+        // println!("PUBLISHING");
+        publisher
+            .send(msg::std_msgs::String {
+                data: "wait".into(),
+            })
+            .unwrap();
+    }
+
+    println!("Clearing response queue");
+
+    while !rx.is_empty() {
+        rx.recv().unwrap();
+    }
+
+    let publisher_inner = publisher.clone();
+    criterion.bench_function("publish to inline subscriber once", move |b| {
+        b.iter_batched(
+            || Uuid::new_v4().to_simple().to_string(),
+            |uuid| {
+                publisher_inner
+                    .send(msg::std_msgs::String { data: uuid.clone() })
+                    .unwrap();
+                assert_eq!(uuid, rx.recv().unwrap());
+            },
+            BatchSize::SmallInput,
+        );
+    });
 }
 
 fn call_service(criterion: &mut Criterion) {
@@ -170,5 +233,5 @@ fn call_service(criterion: &mut Criterion) {
     );
 }
 
-criterion_group!(benches, call_service);
+criterion_group!(benches, publish_subscribe, call_service);
 criterion_main!(benches);
